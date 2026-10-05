@@ -1,0 +1,31 @@
+# Gradle
+.gradle/
+build/
+app/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android
+local.properties
+*.iml
+.idea/
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Secrets — NEVER commit
+keystore.properties
+*.jks
+*.keystore
+*.p12
+*.p12.bak
+keystore-backup/
+
+# APK outputs
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Logs
+*.log

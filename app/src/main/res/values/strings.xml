@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">MyLauncher</string>
+    <string name="accessibility_description">Enables iOS-style gesture navigation (back, home, recents) across all apps when the Android navigation bar is hidden.</string>
+</resources>
