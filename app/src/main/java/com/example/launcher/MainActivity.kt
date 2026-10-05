@@ -17,6 +17,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -58,6 +60,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.alpha
+import androidx.compose.foundation.layout.offset
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.Lifecycle
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
@@ -156,6 +167,41 @@ fun LauncherApp() {
     var showHiddenSheet by remember { mutableStateOf(false) }
     var menuTarget by remember { mutableStateOf<AppInfo?>(null) }
 
+    var entranceKey by remember { mutableIntStateOf(0) }
+    var entranceActive by remember { mutableStateOf(false) }
+    var screenWasOff by remember { mutableStateOf(false) }
+
+    // Reliable unlock detection — SCREEN_OFF / USER_PRESENT broadcasts
+    DisposableEffect(Unit) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    Intent.ACTION_SCREEN_OFF -> screenWasOff = true
+                    Intent.ACTION_USER_PRESENT -> if (screenWasOff) {
+                        entranceKey += 1
+                        entranceActive = true
+                        screenWasOff = false
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        context.registerReceiver(receiver, filter)
+        onDispose { runCatching { context.unregisterReceiver(receiver) } }
+    }
+
+    // Auto-disable entrance mode after the cascade finishes
+    LaunchedEffect(entranceKey) {
+        if (entranceKey > 0) {
+            entranceActive = true
+            delay(1200)
+            entranceActive = false
+        }
+    }
+
     LaunchedEffect(Unit) {
         val loadedApps = withContext(Dispatchers.Default) { loadLauncherApps(context) }
         val loadedHidden = withContext(Dispatchers.IO) { loadHiddenApps(context) }
@@ -244,7 +290,7 @@ fun LauncherApp() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.22f))
+            .background(Color.Black.copy(alpha = 0.10f))
     ) {
         if (!loaded) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -263,6 +309,8 @@ fun LauncherApp() {
                 if (searching) {
                     SearchScreen(
                         allApps = visibleApps,
+                        entranceKey = entranceKey,
+                        entranceActive = entranceActive,
                         onAppClick = launchHandler,
                         onAppLongClick = { menuTarget = it },
                         onClose = { showSearch = false }
@@ -270,6 +318,8 @@ fun LauncherApp() {
                 } else {
                     HomeScreen(
                         allApps = visibleApps,
+                        entranceKey = entranceKey,
+                        entranceActive = entranceActive,
                         onAppClick = launchHandler,
                         onAppLongClick = { menuTarget = it },
                         onSearchClick = { showSearch = true },
@@ -322,6 +372,8 @@ fun LauncherApp() {
 @Composable
 fun HomeScreen(
     allApps: List<AppInfo>,
+    entranceKey: Int,
+    entranceActive: Boolean,
     onAppClick: (AppInfo) -> Unit,
     onAppLongClick: (AppInfo) -> Unit,
     onSearchClick: () -> Unit,
@@ -341,18 +393,20 @@ fun HomeScreen(
     ) {
         AppList(
             apps = sortedApps,
+            entranceKey = entranceKey,
+            entranceActive = entranceActive,
             onAppClick = onAppClick,
             onAppLongClick = onAppLongClick
         )
 
         EdgeScrim(top = true, modifier = Modifier.align(Alignment.TopCenter))
-        EdgeScrim(top = false, modifier = Modifier.align(Alignment.BottomCenter))
 
         TopPill(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = 14.dp)
+                .padding(top = 14.dp),
+            entranceKey = entranceKey
         ) {
             Text("Apps", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
             Spacer(Modifier.width(8.dp))
@@ -384,6 +438,8 @@ fun HomeScreen(
 @Composable
 fun SearchScreen(
     allApps: List<AppInfo>,
+    entranceKey: Int,
+    entranceActive: Boolean,
     onAppClick: (AppInfo) -> Unit,
     onAppLongClick: (AppInfo) -> Unit,
     onClose: () -> Unit
@@ -409,12 +465,13 @@ fun SearchScreen(
     ) {
         AppList(
             apps = filtered,
+            entranceKey = entranceKey,
+            entranceActive = entranceActive,
             onAppClick = onAppClick,
             onAppLongClick = onAppLongClick
         )
 
         EdgeScrim(top = true, modifier = Modifier.align(Alignment.TopCenter))
-        EdgeScrim(top = false, modifier = Modifier.align(Alignment.BottomCenter))
 
         Row(
             modifier = Modifier
@@ -469,6 +526,8 @@ fun SearchScreen(
 @Composable
 private fun AppList(
     apps: List<AppInfo>,
+    entranceKey: Int,
+    entranceActive: Boolean,
     onAppClick: (AppInfo) -> Unit,
     onAppLongClick: (AppInfo) -> Unit
 ) {
@@ -479,13 +538,16 @@ private fun AppList(
         contentPadding = PaddingValues(top = 140.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        items(
+        itemsIndexed(
             items = apps,
-            key = { it.packageName },
-            contentType = { "app" }
-        ) { app ->
+            key = { _, app -> app.packageName },
+            contentType = { _, _ -> "app" }
+        ) { index, app ->
             AppRow(
                 label = app.label,
+                index = index,
+                entranceKey = entranceKey,
+                entranceActive = entranceActive,
                 onClick = { onAppClick(app) },
                 onLongClick = { onAppLongClick(app) }
             )
@@ -663,7 +725,39 @@ fun EdgeScrim(top: Boolean, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun TopPill(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+fun TopPill(
+    modifier: Modifier = Modifier,
+    entranceKey: Int,
+    content: @Composable () -> Unit
+) {
+    var started by remember(entranceKey) { mutableStateOf(false) }
+    LaunchedEffect(entranceKey) {
+        delay(40)
+        started = true
+    }
+    val pillAlpha by animateFloatAsState(
+        targetValue = if (started) 1f else 0f,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "pillAlpha"
+    )
+    // Spring drop with overshoot — the "landing" effect
+    val pillY by animateFloatAsState(
+        targetValue = if (started) 0f else -48f,
+        animationSpec = spring(
+            dampingRatio = 0.40f,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "pillY"
+    )
+    val pillScale by animateFloatAsState(
+        targetValue = if (started) 1f else 0.85f,
+        animationSpec = spring(
+            dampingRatio = 0.36f,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "pillScale"
+    )
+
     val shape = RoundedCornerShape(50)
     val fillBrush = remember {
         Brush.verticalGradient(
@@ -683,6 +777,13 @@ fun TopPill(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     }
     Row(
         modifier = modifier
+            .offset(y = pillY.dp)
+            .alpha(pillAlpha)
+            .graphicsLayer {
+                scaleX = pillScale
+                scaleY = pillScale
+                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 0.5f)
+            }
             .shadow(
                 elevation = 18.dp,
                 shape = shape,
@@ -714,12 +815,59 @@ fun IconButtonCircle(icon: @Composable () -> Unit, onClick: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun AppRow(label: String, onClick: () -> Unit, onLongClick: () -> Unit) {
+fun AppRow(
+    label: String,
+    index: Int,
+    entranceKey: Int,
+    entranceActive: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    // Only the initial visible batch animates. Items scrolled into view during
+    // the entrance window also skip the delay after ~25 items, and after 1.2s
+    // entranceActive flips false — everything shows instantly.
+    val shouldAnimate = entranceActive && index < 25
+
+    var started by remember(entranceKey, index) { mutableStateOf(!shouldAnimate) }
+    LaunchedEffect(entranceKey, index, shouldAnimate) {
+        if (shouldAnimate) {
+            delay((index * 32).toLong())
+        }
+        started = true
+    }
+    val itemAlpha by animateFloatAsState(
+        targetValue = if (started) 1f else 0f,
+        animationSpec = tween(if (shouldAnimate) 180 else 0, easing = FastOutSlowInEasing),
+        label = "itemAlpha"
+    )
+    val itemY by animateFloatAsState(
+        targetValue = if (started) 0f else 42f,
+        animationSpec = if (shouldAnimate) spring(
+            dampingRatio = 0.42f,
+            stiffness = Spring.StiffnessMediumLow
+        ) else tween(0),
+        label = "itemY"
+    )
+    val itemScale by animateFloatAsState(
+        targetValue = if (started) 1f else 0.92f,
+        animationSpec = if (shouldAnimate) spring(
+            dampingRatio = 0.38f,
+            stiffness = Spring.StiffnessLow
+        ) else tween(0),
+        label = "itemScale"
+    )
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 2.dp)
-            // Very subtle background — pill barely visible
+            .offset(y = itemY.dp)
+            .alpha(itemAlpha)
+            .graphicsLayer {
+                scaleX = itemScale
+                scaleY = itemScale
+                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 0.5f)
+            }
             .clip(RoundedCornerShape(50))
             .background(Color.White.copy(alpha = 0.05f))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
